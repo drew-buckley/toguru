@@ -20,6 +20,15 @@ pub enum SwitchOperationalStatus {
     Failure(Arc<anyhow::Error>),
 }
 
+impl SwitchOperationalStatus {
+    pub fn is_confirmed(&self) -> bool {
+        match self {
+            SwitchOperationalStatus::Confirmed(..) => true,
+            _ => false,
+        }
+    }
+}
+
 pub trait StdTask {
     fn run(self) -> impl std::future::Future<Output = Result<(), anyhow::Error>>;
 }
