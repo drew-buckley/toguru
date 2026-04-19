@@ -743,6 +743,7 @@ dependencies = [
  "http",
  "log",
  "serde",
+ "serde_json",
  "systemd-journal-logger",
  "tokio",
  "tokio-util",

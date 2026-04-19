@@ -1,11 +1,9 @@
-use std::time::{Duration, Instant};
+use std::str::FromStr;
 
 use anyhow::Context;
-use tokio::sync::oneshot;
 
 use crate::{
-    SwitchOperationalStatus, SwitchToggleState,
-    api::v1::SetModeBurstProperties,
+    SwitchToggleState,
     broker::{BrokerRequest, BrokerResponse},
     rrch::Client,
 };
@@ -13,6 +11,17 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub enum ApiVersion {
     V1,
+}
+
+impl FromStr for ApiVersion {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "v1" => Ok(Self::V1),
+            _ => anyhow::bail!("not a valid api version string"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +62,7 @@ impl From<v1::Response> for Response {
     }
 }
 
+#[derive(Clone)]
 pub struct Api {
     broker_tx: Client<BrokerRequest, BrokerResponse>,
 }
@@ -60,24 +70,25 @@ pub struct Api {
 impl Api {
     pub async fn transact(&self, req: Request) -> Result<Response, anyhow::Error> {
         let api_version = req.version();
-        let (req, burst_props) = match req {
+        let req = match req {
             Request::V1(req) => match req {
-                v1::Request::List => (BrokerRequest::List, None),
-                v1::Request::Get(req) => (BrokerRequest::Get(req.id), None),
-                v1::Request::Set(req) => {
-                    (BrokerRequest::Set(req.id, req.state), req.mode.as_burst())
-                }
+                v1::Request::List => BrokerRequest::List,
+                v1::Request::Get(req) => BrokerRequest::Get(req.id),
+                v1::Request::Set(req) => BrokerRequest::Set(req.id, req.state),
             },
         };
 
-        let resp = if let Some(burst_props) = burst_props
-            && let BrokerRequest::Set(id, state) = req
-        {
-            self.transact_broker_burst_set(id, state, burst_props)
-                .await?
-        } else {
-            self.transact_broker_simple(req).await?
-        };
+        log::trace!("Sending broker request: {:?}", req);
+        let resp_rx = self
+            .broker_tx
+            .send_request(req)
+            .await
+            .context("failed to send broker request")?;
+
+        let resp = resp_rx
+            .await
+            .context("broker response channel closed early")?;
+        log::trace!("Got broker response: {:?}", resp);
 
         let resp = match resp {
             BrokerResponse::List(switches) => match api_version {
@@ -95,64 +106,6 @@ impl Api {
         };
 
         Ok(resp)
-    }
-
-    async fn transact_broker_simple(
-        &self,
-        req: BrokerRequest,
-    ) -> Result<BrokerResponse, anyhow::Error> {
-        log::trace!("Sending broker request: {:?}", req);
-        let resp_rx = self
-            .broker_tx
-            .send_request(req)
-            .await
-            .context("failed to send broker request")?;
-
-        let resp = resp_rx
-            .await
-            .context("broker response channel closed early")?;
-        log::trace!("Got broker response: {:?}", resp);
-
-        Ok(resp)
-    }
-
-    async fn transact_broker_burst_set(
-        &self,
-        id: String,
-        state: SwitchToggleState,
-        burst_props: SetModeBurstProperties,
-    ) -> Result<BrokerResponse, anyhow::Error> {
-        let interval = Duration::from_millis(burst_props.interval_ms as u64);
-        let mut req = Some(BrokerRequest::Set(id, state));
-        let mut resp = None;
-        for i in 0..burst_props.limit {
-            log::trace!(
-                "Sending broker request (set burst attempt #{}): {:?}",
-                i,
-                req
-            );
-            let resp_rx = self
-                .broker_tx
-                .send_request(req.take().unwrap())
-                .await
-                .context("failed to send broker request")?;
-
-            resp = Some(
-                resp_rx
-                    .await
-                    .context("broker response channel closed early")?,
-            );
-            log::trace!("Got broker response: {:?}", resp);
-            if let BrokerResponse::Set(.., status) = resp.as_ref().unwrap()
-                && status.is_confirmed()
-            {
-                break;
-            } else {
-                tokio::time::sleep(interval).await;
-            }
-        }
-
-        resp.ok_or(anyhow::anyhow!("burst limit is 0"))
     }
 }
 
@@ -173,39 +126,22 @@ pub mod v1 {
         pub id: String,
     }
 
+    impl GetReq {
+        pub fn new(id: String) -> Self {
+            Self { id }
+        }
+    }
+
     #[derive(Debug, Clone, serde::Deserialize)]
     pub struct SetReq {
         pub id: String,
         pub state: SwitchToggleState,
-
-        #[serde(default = "set_req_mode_default")]
-        pub mode: SetMode,
     }
 
-    #[derive(Debug, Clone, Copy, serde::Deserialize)]
-    #[serde(tag = "type", rename_all = "snake_case")]
-    pub enum SetMode {
-        Oneshot,
-        Burst(SetModeBurstProperties),
-    }
-
-    impl SetMode {
-        pub fn as_burst(&self) -> Option<SetModeBurstProperties> {
-            match self {
-                SetMode::Oneshot => None,
-                SetMode::Burst(burst_props) => Some(*burst_props),
-            }
+    impl SetReq {
+        pub fn new(id: String, state: SwitchToggleState) -> Self {
+            Self { id, state }
         }
-    }
-
-    #[derive(Debug, Clone, Copy, serde::Deserialize)]
-    pub struct SetModeBurstProperties {
-        pub limit: u32,
-        pub interval_ms: u32,
-    }
-
-    fn set_req_mode_default() -> SetMode {
-        SetMode::Oneshot
     }
 
     #[derive(Debug, Clone)]
@@ -216,42 +152,15 @@ pub mod v1 {
         Error(String),
     }
 
-    #[derive(Debug, Clone, serde::Serialize)]
+    #[derive(Debug, Clone)]
     pub struct GetSetResp {
-        pub id: String,
-        pub status: String,
-        pub state: Option<SwitchToggleState>,
-        pub msg: Option<String>,
+        pub switch: String,
+        pub status: SwitchOperationalStatus,
     }
 
     impl From<(String, SwitchOperationalStatus)> for GetSetResp {
-        fn from((id, status): (String, SwitchOperationalStatus)) -> Self {
-            match status {
-                SwitchOperationalStatus::Unknown => GetSetResp {
-                    id,
-                    status: "unknown".into(),
-                    state: None,
-                    msg: None,
-                },
-                SwitchOperationalStatus::Transitioning(state) => GetSetResp {
-                    id,
-                    status: "transitioning".into(),
-                    state: Some(state),
-                    msg: None,
-                },
-                SwitchOperationalStatus::Confirmed(state) => GetSetResp {
-                    id,
-                    status: "confirmed".into(),
-                    state: Some(state),
-                    msg: None,
-                },
-                SwitchOperationalStatus::Failure(error) => GetSetResp {
-                    id,
-                    status: "failure".into(),
-                    state: None,
-                    msg: Some(error.to_string()),
-                },
-            }
+        fn from((switch, status): (String, SwitchOperationalStatus)) -> Self {
+            GetSetResp { switch, status }
         }
     }
 }

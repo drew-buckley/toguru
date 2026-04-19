@@ -12,6 +12,15 @@ pub enum SwitchToggleState {
     Off,
 }
 
+impl ToString for SwitchToggleState {
+    fn to_string(&self) -> String {
+        match self {
+            SwitchToggleState::On => "on".into(),
+            SwitchToggleState::Off => "off".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SwitchOperationalStatus {
     Unknown,
