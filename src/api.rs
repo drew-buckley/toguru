@@ -149,12 +149,11 @@ pub mod v1 {
         List(Vec<String>),
         Get(GetSetResp),
         Set(GetSetResp),
-        Error(String),
     }
 
     #[derive(Debug, Clone)]
     pub struct GetSetResp {
-        pub switch: String,
+        pub id: String,
         pub status: SwitchOperationalStatus,
     }
 
