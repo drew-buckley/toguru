@@ -1,43 +1,12 @@
-use std::{process::Output, sync::Arc};
+use serde::{Deserialize, Serialize};
+use strum_macros::{Display as EnumDisplay, EnumString};
 
-pub mod actuators;
 pub mod api;
-pub mod broker;
-pub mod rrch;
-pub mod server;
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub enum SwitchToggleState {
-    On,
+#[derive(Debug, Clone, Copy, EnumDisplay, EnumString, Serialize, Deserialize)]
+pub enum ToggleState {
     Off,
+    On,
 }
 
-impl ToString for SwitchToggleState {
-    fn to_string(&self) -> String {
-        match self {
-            SwitchToggleState::On => "on".into(),
-            SwitchToggleState::Off => "off".into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum SwitchOperationalStatus {
-    Unknown,
-    Transitioning(SwitchToggleState),
-    Confirmed(SwitchToggleState),
-    Failure(Arc<anyhow::Error>),
-}
-
-impl SwitchOperationalStatus {
-    pub fn is_confirmed(&self) -> bool {
-        match self {
-            SwitchOperationalStatus::Confirmed(..) => true,
-            _ => false,
-        }
-    }
-}
-
-pub trait StdTask {
-    fn run(self) -> impl std::future::Future<Output = Result<(), anyhow::Error>>;
-}
+pub enum ActuatorState {}
