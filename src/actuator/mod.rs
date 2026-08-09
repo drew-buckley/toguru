@@ -4,6 +4,8 @@ use tokio::sync::mpsc;
 
 use crate::ToggleState;
 
+pub mod mqtt_zigbee_switch;
+
 pub enum Actuator {
     MqttZigbeeSwitch,
 }

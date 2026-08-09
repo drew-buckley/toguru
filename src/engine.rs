@@ -3,12 +3,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use ahash::HashMap;
+use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use parking_lot::Mutex;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 
-use crate::{ToggleState, actuator::Actuator};
+use crate::{
+    ToggleState,
+    actuator::{Actuator, ActuatorToggleState, ActuatorToggleUpState},
+};
+
+pub fn make_engine(ctrl_buffer: usize) -> (Engine, Controller) {
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(ctrl_buffer);
+    (Engine::new(ctrl_rx), Controller::new(ctrl_tx))
+}
 
 #[derive(Clone)]
 pub struct Controller {
@@ -70,31 +78,61 @@ impl Controller {
 
 pub struct Engine {
     ctrl_rx: mpsc::Receiver<Command>,
-    actuator_map: Arc<HashMap<String, AsyncMutex<Actuator>>>,
-    state_cache: Arc<StateCache>,
+    actuator_map: HashMap<String, AsyncMutex<Actuator>>,
 }
 
 impl Engine {
-    pub async fn run(mut self) -> Result<(), anyhow::Error> {
-        while let Some(cmd) = self.ctrl_rx.recv().await {
+    fn new(ctrl_rx: mpsc::Receiver<Command>) -> Self {
+        Self {
+            ctrl_rx,
+            actuator_map: HashMap::new(),
+        }
+    }
+
+    pub async fn run(self) -> Result<(), Vec<anyhow::Error>> {
+        let Self {
+            mut ctrl_rx,
+            actuator_map,
+        } = self;
+
+        let actuator_map = Arc::new(actuator_map);
+        let state_cache = Arc::new(StateCache::from_iter(actuator_map.keys()));
+
+        for (id, actuator) in actuator_map.iter() {
+            let (state_tx, state_rx) = mpsc::channel(32);
+            actuator
+                .try_lock()
+                // safe to unwrap; nothing else have access to these mutexes yet
+                .unwrap()
+                .register_change_listener(state_tx);
+
+            kick_observe(id.clone(), state_rx, Arc::clone(&state_cache));
+        }
+
+        while let Some(cmd) = ctrl_rx.recv().await {
             match cmd {
                 Command::List(ListCommand { resp_tx }) => {
                     if resp_tx
-                        .send(self.actuator_map.keys().cloned().collect())
+                        .send(actuator_map.keys().cloned().collect())
                         .is_err()
                     {
                         log::warn!("Operation response channel closed too early for response");
                     }
                 }
                 Command::Toggle(cmd) => {
-                    let actuator_map = Arc::clone(&self.actuator_map);
-                    let state_cache = Arc::clone(&self.state_cache);
+                    let actuator_map = Arc::clone(&actuator_map);
+                    let state_cache = Arc::clone(&state_cache);
                     tokio::spawn(async move { toggle(cmd, actuator_map, state_cache).await });
                 }
             }
         }
 
         Ok(())
+    }
+
+    pub fn register_actuator(&mut self, id: impl Into<String>, actuator: Actuator) {
+        self.actuator_map
+            .insert(id.into(), AsyncMutex::new(actuator));
     }
 }
 
@@ -153,12 +191,56 @@ async fn toggle(
     }
 }
 
+fn kick_observe(
+    id: impl AsRef<str> + Send + 'static,
+    state_rx: mpsc::Receiver<ActuatorToggleState>,
+    state_cache: Arc<StateCache>,
+) {
+    tokio::spawn(async move {
+        let id = id.as_ref();
+        if let Err(err) = observe(&id, state_rx, state_cache).await {
+            log::error!("Observe task failed for \"{}\": {:?}", id, err);
+        } else {
+            log::info!("Observe task finished for \"{}\"", id);
+        }
+    });
+}
+
+async fn observe(
+    id: impl AsRef<str>,
+    mut state_rx: mpsc::Receiver<ActuatorToggleState>,
+    state_cache: Arc<StateCache>,
+) -> Result<(), anyhow::Error> {
+    let id = id.as_ref();
+    while let Some(state) = state_rx.recv().await {
+        if let ActuatorToggleState::Up(ActuatorToggleUpState { state, .. }) = state {
+            state_cache.set_observed(id, state)?;
+        }
+    }
+
+    Ok(())
+}
+
 struct StateCache {
     commanded: HashMap<String, Mutex<Option<ToggleStateSnapshot>>>,
     observed: HashMap<String, Mutex<Option<ToggleStateSnapshot>>>,
 }
 
 impl StateCache {
+    fn from_iter<I, T>(ids: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<String>,
+    {
+        let commanded = HashMap::from_iter(ids.into_iter().map(|id| (id.into(), Mutex::new(None))));
+        let observed =
+            HashMap::from_iter(commanded.keys().map(|id| (id.clone(), Mutex::new(None))));
+        Self {
+            commanded,
+            observed,
+        }
+    }
+
     fn get_last_operable(&self, id: impl AsRef<str>) -> Option<SystemTime> {
         let id = id.as_ref();
         match (self.get_commanded(id), self.get_observed(id)) {
