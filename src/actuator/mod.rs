@@ -9,11 +9,7 @@ pub enum Actuator {
 }
 
 impl Actuator {
-    pub async fn set(
-        &mut self,
-        switch: impl AsRef<str>,
-        state: ToggleState,
-    ) -> Result<serde_json::Value, error::OperationError> {
+    pub async fn set(&mut self, state: ToggleState) -> Result<(), error::OperationError> {
         todo!()
     }
 

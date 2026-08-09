@@ -829,6 +829,7 @@ dependencies = [
  "env_logger",
  "http",
  "log",
+ "parking_lot",
  "serde",
  "serde_json",
  "strum",

@@ -11,6 +11,11 @@ use crate::engine::{
 
 use super::*;
 
+pub enum ApiPath {
+    Meta,
+    Toggle(Option<String>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToggleGetRequest {
     id: String,
@@ -157,6 +162,7 @@ impl From<ControllerDownToggleStatus> for ToggleDownStatus {
 pub enum ApiError {
     MethodNotAllowed,
     UnknownToggleId(String),
+    MissingState,
     UnknownState(String),
     Internal(serde_json::Value),
 }
@@ -166,7 +172,7 @@ impl ApiError {
         match self {
             ApiError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             ApiError::UnknownToggleId(_) => StatusCode::NOT_FOUND,
-            ApiError::UnknownState(_) => StatusCode::BAD_REQUEST,
+            ApiError::UnknownState(_) | ApiError::MissingState => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -184,11 +190,11 @@ pub struct Api {
 }
 
 impl Api {
-    pub async fn get(&self, path: ApiV1Path, _: HashMap<String, String>) -> Response {
+    pub async fn get(&self, path: ApiPath, _: HashMap<String, String>) -> Response {
         let body = match path {
-            ApiV1Path::Meta => todo!(),
-            ApiV1Path::Toggle(None) => self.controller.list_toggles().await.into(),
-            ApiV1Path::Toggle(Some(toggle_id)) => self.controller.get(toggle_id).await.into(),
+            ApiPath::Meta => todo!(),
+            ApiPath::Toggle(None) => self.controller.list_toggles().await.into(),
+            ApiPath::Toggle(Some(toggle_id)) => self.controller.get(toggle_id).await.into(),
         };
         Response::new(
             SystemTime::now()
@@ -199,11 +205,23 @@ impl Api {
         )
     }
 
-    pub async fn set(&self, path: ApiV1Path, params: HashMap<String, String>) -> Response {
+    pub async fn set(&self, path: ApiPath, mut params: HashMap<String, String>) -> Response {
         let body = match path {
-            ApiV1Path::Meta => method_not_allowed(),
-            ApiV1Path::Toggle(None) => method_not_allowed(),
-            ApiV1Path::Toggle(Some(toggle_id)) => self.controller.get(toggle_id).await.into(),
+            ApiPath::Meta => method_not_allowed(),
+            ApiPath::Toggle(None) => method_not_allowed(),
+            ApiPath::Toggle(Some(toggle_id)) => {
+                if let Some(state) = params.remove("state") {
+                    if let Ok(state) = state.parse() {
+                        self.controller.set(toggle_id, state).await.into()
+                    } else {
+                        ResponseBody::ToggleSet(OperationStatus::Error(ApiError::UnknownState(
+                            state,
+                        )))
+                    }
+                } else {
+                    ResponseBody::ToggleSet(OperationStatus::Error(ApiError::MissingState))
+                }
+            }
         };
         Response::new(
             SystemTime::now()
