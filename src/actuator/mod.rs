@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{os::linux::raw::stat, sync::Arc};
 
 use tokio::sync::mpsc;
 
@@ -7,6 +7,7 @@ use crate::ToggleState;
 pub mod mqtt_zigbee_switch;
 
 pub enum Actuator {
+    PhoneyBaloney,
     MqttZigbeeSwitch,
 }
 
@@ -15,7 +16,7 @@ impl Actuator {
         todo!()
     }
 
-    pub fn register_change_listener(&mut self, state_tx: mpsc::Sender<ActuatorToggleState>) {
+    pub fn register_change_listener(&mut self, state_tx: mpsc::Sender<Arc<ActuatorToggleState>>) {
         todo!()
     }
 }
@@ -42,6 +43,41 @@ impl ActuatorToggleUpState {
 
     pub fn add_extra_context(&mut self, extra_context: serde_json::Value) {
         self.extra_context = extra_context;
+    }
+}
+
+struct StateObserverWire {
+    tx_tx: mpsc::Sender<mpsc::Sender<Arc<ActuatorToggleState>>>,
+}
+
+impl StateObserverWire {
+    fn new(tx_tx: mpsc::Sender<mpsc::Sender<Arc<ActuatorToggleState>>>) -> Self {
+        Self { tx_tx }
+    }
+}
+
+struct StateReporter {
+    tx_rx: mpsc::Receiver<mpsc::Sender<Arc<ActuatorToggleState>>>,
+    report_txs: Vec<mpsc::Sender<Arc<ActuatorToggleState>>>,
+}
+
+impl StateReporter {
+    fn new(tx_rx: mpsc::Receiver<mpsc::Sender<Arc<ActuatorToggleState>>>) -> Self {
+        Self {
+            tx_rx,
+            report_txs: Vec::new(),
+        }
+    }
+
+    fn report_state(&mut self, state: ActuatorToggleState) {
+        let state = Arc::new(state);
+        while let Ok(report_tx) = self.tx_rx.try_recv() {
+            self.report_txs.push(report_tx);
+        }
+
+        for report_tx in &mut self.report_txs {
+            let _ = report_tx.try_send(Arc::clone(&state));
+        }
     }
 }
 

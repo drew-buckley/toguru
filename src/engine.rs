@@ -193,7 +193,7 @@ async fn toggle(
 
 fn kick_observe(
     id: impl AsRef<str> + Send + 'static,
-    state_rx: mpsc::Receiver<ActuatorToggleState>,
+    state_rx: mpsc::Receiver<Arc<ActuatorToggleState>>,
     state_cache: Arc<StateCache>,
 ) {
     tokio::spawn(async move {
@@ -208,12 +208,12 @@ fn kick_observe(
 
 async fn observe(
     id: impl AsRef<str>,
-    mut state_rx: mpsc::Receiver<ActuatorToggleState>,
+    mut state_rx: mpsc::Receiver<Arc<ActuatorToggleState>>,
     state_cache: Arc<StateCache>,
 ) -> Result<(), anyhow::Error> {
     let id = id.as_ref();
     while let Some(state) = state_rx.recv().await {
-        if let ActuatorToggleState::Up(ActuatorToggleUpState { state, .. }) = state {
+        if let ActuatorToggleState::Up(ActuatorToggleUpState { state, .. }) = *state {
             state_cache.set_observed(id, state)?;
         }
     }
