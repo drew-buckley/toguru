@@ -5,7 +5,7 @@ pub mod actuator;
 pub mod api;
 pub mod engine;
 
-#[derive(Debug, Clone, Copy, EnumDisplay, EnumString, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EnumDisplay, EnumString, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ToggleState {
     Off,
     On,

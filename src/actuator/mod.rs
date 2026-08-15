@@ -1,23 +1,46 @@
-use std::{os::linux::raw::stat, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use tokio::sync::mpsc;
 
-use crate::ToggleState;
+use crate::{
+    ToggleState,
+    actuator::{
+        mqtt_zigbee_switch::MqttZigbeeSwitchActuator, phoney_baloney::PhoneyBaloneyActuator,
+    },
+};
 
 pub mod mqtt_zigbee_switch;
+pub mod phoney_baloney;
 
 pub enum Actuator {
-    PhoneyBaloney,
-    MqttZigbeeSwitch,
+    PhoneyBaloney(PhoneyBaloneyActuator),
+    MqttZigbeeSwitch(MqttZigbeeSwitchActuator),
 }
 
 impl Actuator {
     pub async fn set(&mut self, state: ToggleState) -> Result<(), error::OperationError> {
-        todo!()
+        log::debug!("Actuator ({}) set: {}", self.id(), state);
+
+        match self {
+            Self::PhoneyBaloney(actuator) => actuator.set(state).await,
+            Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
+        }
     }
 
     pub fn register_change_listener(&mut self, state_tx: mpsc::Sender<Arc<ActuatorToggleState>>) {
-        todo!()
+        log::debug!("Actuator ({}) state change listener added", self.id());
+
+        match self {
+            Self::PhoneyBaloney(actuator) => actuator.register_change_listener(state_tx),
+            Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
+        }
+    }
+
+    pub fn id(&self) -> Cow<'_, str> {
+        match self {
+            Self::PhoneyBaloney(actuator) => actuator.id().into(),
+            Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
+        }
     }
 }
 
@@ -25,6 +48,18 @@ impl Actuator {
 pub enum ActuatorToggleState {
     Up(ActuatorToggleUpState),
     Down(Arc<error::OperationError>),
+}
+
+impl From<ActuatorToggleUpState> for ActuatorToggleState {
+    fn from(state: ActuatorToggleUpState) -> Self {
+        Self::Up(state)
+    }
+}
+
+impl From<error::OperationError> for ActuatorToggleState {
+    fn from(err: error::OperationError) -> Self {
+        Self::Down(Arc::new(err))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +79,11 @@ impl ActuatorToggleUpState {
     pub fn add_extra_context(&mut self, extra_context: serde_json::Value) {
         self.extra_context = extra_context;
     }
+}
+
+fn state_observer() -> (StateObserverWire, StateReporter) {
+    let (tx_tx, tx_rx) = mpsc::channel(1);
+    (StateObserverWire::new(tx_tx), StateReporter::new(tx_rx))
 }
 
 struct StateObserverWire {
