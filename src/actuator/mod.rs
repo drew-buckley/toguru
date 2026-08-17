@@ -86,6 +86,7 @@ fn state_observer() -> (StateObserverWire, StateReporter) {
     (StateObserverWire::new(tx_tx), StateReporter::new(tx_rx))
 }
 
+#[derive(Clone)]
 struct StateObserverWire {
     tx_tx: mpsc::Sender<mpsc::Sender<Arc<ActuatorToggleState>>>,
 }

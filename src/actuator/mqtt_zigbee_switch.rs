@@ -1,5 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
+use ahash::HashMap;
 use rumqttc::MqttOptions;
 use tokio::sync::mpsc;
 
@@ -12,12 +13,24 @@ use crate::{
 };
 
 pub struct MqttZigbeeSwitchActuator {
-    id: Arc<String>,
-    set_tx: mpsc::Sender<(Arc<String>, ToggleState)>,
+    id: String,
+    set_tx: mpsc::Sender<(String, ToggleState)>,
     state_observer_wire: StateObserverWire,
 }
 
 impl MqttZigbeeSwitchActuator {
+    fn new(
+        id: impl Into<String>,
+        set_tx: mpsc::Sender<(String, ToggleState)>,
+        state_observer_wire: StateObserverWire,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            set_tx,
+            state_observer_wire,
+        }
+    }
+
     pub async fn set(&mut self, state: ToggleState) -> Result<(), OperationError> {
         todo!()
     }
@@ -34,13 +47,13 @@ impl MqttZigbeeSwitchActuator {
 pub struct MqttBrokerConnection {
     options: MqttOptions,
     state_observer_wire: StateObserverWire,
-    state_reporter: StateReporter,
+    state_reporter: HashMap<String, StateReporter>,
     set_tx: mpsc::Sender<(Arc<String>, ToggleState)>,
     set_rx: mpsc::Receiver<(Arc<String>, ToggleState)>,
 }
 
 impl MqttBrokerConnection {
-    fn new(id: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
+    pub fn new(id: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
         let (state_observer_wire, state_reporter) = state_observer();
         let (set_tx, set_rx) = mpsc::channel(12);
         Self {
@@ -50,6 +63,10 @@ impl MqttBrokerConnection {
             set_tx,
             set_rx,
         }
+    }
+
+    pub fn new_actuator(&mut self, id: impl Into<String>) -> MqttZigbeeSwitchActuator {
+        MqttZigbeeSwitchActuator::new(id, self.set_tx.clone(), self.state_observer_wire.clone())
     }
 
     pub async fn run(self) -> Result<(), anyhow::Error> {
