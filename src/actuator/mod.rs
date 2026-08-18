@@ -1,6 +1,6 @@
 use std::{borrow::Cow, sync::Arc};
 
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::{
     ToggleState,
@@ -27,11 +27,9 @@ impl Actuator {
         }
     }
 
-    pub fn register_change_listener(&mut self, state_tx: mpsc::Sender<Arc<ActuatorToggleState>>) {
-        log::debug!("Actuator ({}) state change listener added", self.id());
-
+    pub fn subscribe_to_changes(&self) -> ActuatorChangeListener {
         match self {
-            Self::PhoneyBaloney(actuator) => actuator.register_change_listener(state_tx),
+            Self::PhoneyBaloney(actuator) => unimplemented!(),
             Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
         }
     }
@@ -40,6 +38,30 @@ impl Actuator {
         match self {
             Self::PhoneyBaloney(actuator) => actuator.id().into(),
             Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
+        }
+    }
+}
+
+pub struct ActuatorChangeListener {
+    id: String,
+    rx: broadcast::Receiver<ActuatorToggleState>,
+}
+
+impl ActuatorChangeListener {
+    fn new(id: impl Into<String>, rx: broadcast::Receiver<ActuatorToggleState>) -> Self {
+        Self { id: id.into(), rx }
+    }
+
+    pub async fn recv(&mut self) -> Result<ActuatorToggleState, error::ActuatorChangeRecvError> {
+        self.rx.recv().await.map_err(|e| e.into())
+    }
+}
+
+impl Clone for ActuatorChangeListener {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            rx: self.rx.resubscribe(),
         }
     }
 }
@@ -81,47 +103,6 @@ impl ActuatorToggleUpState {
     }
 }
 
-fn state_observer() -> (StateObserverWire, StateReporter) {
-    let (tx_tx, tx_rx) = mpsc::channel(1);
-    (StateObserverWire::new(tx_tx), StateReporter::new(tx_rx))
-}
-
-#[derive(Clone)]
-struct StateObserverWire {
-    tx_tx: mpsc::Sender<mpsc::Sender<Arc<ActuatorToggleState>>>,
-}
-
-impl StateObserverWire {
-    fn new(tx_tx: mpsc::Sender<mpsc::Sender<Arc<ActuatorToggleState>>>) -> Self {
-        Self { tx_tx }
-    }
-}
-
-struct StateReporter {
-    tx_rx: mpsc::Receiver<mpsc::Sender<Arc<ActuatorToggleState>>>,
-    report_txs: Vec<mpsc::Sender<Arc<ActuatorToggleState>>>,
-}
-
-impl StateReporter {
-    fn new(tx_rx: mpsc::Receiver<mpsc::Sender<Arc<ActuatorToggleState>>>) -> Self {
-        Self {
-            tx_rx,
-            report_txs: Vec::new(),
-        }
-    }
-
-    fn report_state(&mut self, state: ActuatorToggleState) {
-        let state = Arc::new(state);
-        while let Ok(report_tx) = self.tx_rx.try_recv() {
-            self.report_txs.push(report_tx);
-        }
-
-        for report_tx in &mut self.report_txs {
-            let _ = report_tx.try_send(Arc::clone(&state));
-        }
-    }
-}
-
 pub mod error {
     use super::*;
 
@@ -132,5 +113,23 @@ pub mod error {
 
         #[error("internal error")]
         Internal(#[source] anyhow::Error),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum ActuatorChangeRecvError {
+        #[error("actuator is closed")]
+        ActuatorClosed,
+
+        #[error("actuator changes lagged behind {0} state transitions")]
+        Lagged(u64),
+    }
+
+    impl From<broadcast::error::RecvError> for ActuatorChangeRecvError {
+        fn from(err: broadcast::error::RecvError) -> Self {
+            match err {
+                broadcast::error::RecvError::Closed => Self::ActuatorClosed,
+                broadcast::error::RecvError::Lagged(lag) => Self::Lagged(lag),
+            }
+        }
     }
 }

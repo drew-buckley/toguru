@@ -1,16 +1,18 @@
 use std::{sync::Arc, time::Duration};
 
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 use crate::{
     ToggleState,
-    actuator::{ActuatorToggleState, ActuatorToggleUpState, error::OperationError},
+    actuator::{
+        ActuatorChangeListener, ActuatorToggleState, ActuatorToggleUpState, error::OperationError,
+    },
 };
 
 pub struct PhoneyBaloneyActuator {
     id: String,
     toggle_state: ToggleState,
-    state_txs: Vec<mpsc::Sender<Arc<ActuatorToggleState>>>,
+    state_change_tx: broadcast::Sender<ActuatorToggleState>,
     state_change_delay: Duration,
 }
 
@@ -19,11 +21,13 @@ impl PhoneyBaloneyActuator {
         id: impl Into<String>,
         init_state: ToggleState,
         state_change_delay: Duration,
+        state_change_buffer: usize,
     ) -> Self {
+        let (state_change_tx, _) = broadcast::channel(state_change_buffer);
         Self {
             id: id.into(),
             toggle_state: init_state,
-            state_txs: Vec::new(),
+            state_change_tx,
             state_change_delay,
         }
     }
@@ -32,21 +36,21 @@ impl PhoneyBaloneyActuator {
         if self.toggle_state != state {
             self.toggle_state = state;
             if self.state_change_delay == Duration::ZERO {
-                send_state_changes(state, &self.state_txs);
+                send_state_changes(state, &self.state_change_tx);
             } else {
-                let state_txs = self.state_txs.clone();
+                let state_change_tx = self.state_change_tx.clone();
                 let state_change_delay = self.state_change_delay;
                 tokio::spawn(async move {
                     tokio::time::sleep(state_change_delay).await;
-                    send_state_changes(state, state_txs.iter());
+                    send_state_changes(state, &state_change_tx);
                 });
             }
         }
         Ok(())
     }
 
-    pub fn register_change_listener(&mut self, state_tx: mpsc::Sender<Arc<ActuatorToggleState>>) {
-        self.state_txs.push(state_tx);
+    pub fn subscribe_to_changes(&self) -> ActuatorChangeListener {
+        ActuatorChangeListener::new(&self.id, self.state_change_tx.subscribe())
     }
 
     pub fn id(&self) -> &str {
@@ -54,14 +58,11 @@ impl PhoneyBaloneyActuator {
     }
 }
 
-fn send_state_changes<'a, I>(state: ToggleState, state_txs: I)
-where
-    I: IntoIterator<Item = &'a mpsc::Sender<Arc<ActuatorToggleState>>>,
-{
-    let state = Arc::new(ActuatorToggleUpState::new(state).into());
-    for state_tx in state_txs {
-        if let Err(err) = state_tx.try_send(Arc::clone(&state)) {
-            log::warn!("Failed to send state update: {:?}", err);
-        }
+fn send_state_changes<'a>(
+    state: ToggleState,
+    state_change_tx: &broadcast::Sender<ActuatorToggleState>,
+) {
+    if let Err(err) = state_change_tx.send(ActuatorToggleUpState::new(state).into()) {
+        log::warn!("Failed to send state update: {:?}", err);
     }
 }

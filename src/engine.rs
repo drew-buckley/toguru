@@ -10,7 +10,10 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 
 use crate::{
     ToggleState,
-    actuator::{Actuator, ActuatorToggleState, ActuatorToggleUpState},
+    actuator::{
+        Actuator, ActuatorChangeListener, ActuatorToggleState, ActuatorToggleUpState,
+        error::ActuatorChangeRecvError,
+    },
 };
 
 pub fn make_engine(ctrl_buffer: usize) -> (Engine, Controller) {
@@ -99,14 +102,13 @@ impl Engine {
         let state_cache = Arc::new(StateCache::from_iter(actuator_map.keys()));
 
         for (id, actuator) in actuator_map.iter() {
-            let (state_tx, state_rx) = mpsc::channel(32);
-            actuator
+            let change_listener = actuator
                 .try_lock()
                 // safe to unwrap; nothing else have access to these mutexes yet
                 .unwrap()
-                .register_change_listener(state_tx);
+                .subscribe_to_changes();
 
-            kick_observe(id.clone(), state_rx, Arc::clone(&state_cache));
+            kick_observe(id.clone(), change_listener, Arc::clone(&state_cache));
         }
 
         while let Some(cmd) = ctrl_rx.recv().await {
@@ -193,12 +195,12 @@ async fn toggle(
 
 fn kick_observe(
     id: impl AsRef<str> + Send + 'static,
-    state_rx: mpsc::Receiver<Arc<ActuatorToggleState>>,
+    change_listener: ActuatorChangeListener,
     state_cache: Arc<StateCache>,
 ) {
     tokio::spawn(async move {
         let id = id.as_ref();
-        if let Err(err) = observe(&id, state_rx, state_cache).await {
+        if let Err(err) = observe(&id, change_listener, state_cache).await {
             log::error!("Observe task failed for \"{}\": {:?}", id, err);
         } else {
             log::info!("Observe task finished for \"{}\"", id);
@@ -208,12 +210,21 @@ fn kick_observe(
 
 async fn observe(
     id: impl AsRef<str>,
-    mut state_rx: mpsc::Receiver<Arc<ActuatorToggleState>>,
+    mut change_listener: ActuatorChangeListener,
     state_cache: Arc<StateCache>,
 ) -> Result<(), anyhow::Error> {
     let id = id.as_ref();
-    while let Some(state) = state_rx.recv().await {
-        if let ActuatorToggleState::Up(ActuatorToggleUpState { state, .. }) = *state {
+    while let Some(state) = change_listener
+        .recv()
+        .await
+        .inspect_err(|err| {
+            if let ActuatorChangeRecvError::Lagged(lag) = err {
+                log::warn!("State change listener fell behind by {}", lag);
+            }
+        })
+        .ok()
+    {
+        if let ActuatorToggleState::Up(ActuatorToggleUpState { state, .. }) = state {
             state_cache.set_observed(id, state)?;
         }
     }
