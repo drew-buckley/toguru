@@ -49,7 +49,7 @@ impl Response {
 
 impl Into<super::Response> for Response {
     fn into(self) -> super::Response {
-        super::Response::Api(ApiResponse::V1(self))
+        super::Response::Api(VersionedApiResponse::V1(self))
     }
 }
 
@@ -185,6 +185,7 @@ pub enum OperationStatus<T: Clone> {
     Error(ApiError),
 }
 
+#[derive(Clone)]
 pub struct Api {
     controller: Controller,
 }
@@ -205,7 +206,7 @@ impl Api {
         )
     }
 
-    pub async fn set(&self, path: ApiPath, mut params: HashMap<String, String>) -> Response {
+    pub async fn post(&self, path: ApiPath, mut params: HashMap<String, String>) -> Response {
         let body = match path {
             ApiPath::Meta => method_not_allowed(),
             ApiPath::Toggle(None) => method_not_allowed(),

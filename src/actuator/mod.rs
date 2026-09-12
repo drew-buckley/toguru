@@ -104,10 +104,15 @@ impl ActuatorToggleUpState {
 }
 
 pub mod error {
+    use std::time::Duration;
+
     use super::*;
 
     #[derive(Debug, thiserror::Error)]
     pub enum OperationError {
+        #[error("actuator is unresponsive")]
+        Unresponsive,
+
         #[error("failed to communicate over the network")]
         Network(#[source] anyhow::Error),
 

@@ -3,7 +3,9 @@ use strum_macros::{Display as EnumDisplay, EnumString};
 
 pub mod actuator;
 pub mod api;
+pub mod daemon;
 pub mod engine;
+pub mod server;
 
 #[derive(Debug, Clone, Copy, EnumDisplay, EnumString, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ToggleState {
