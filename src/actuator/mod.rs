@@ -29,15 +29,15 @@ impl Actuator {
 
     pub fn subscribe_to_changes(&self) -> ActuatorChangeListener {
         match self {
-            Self::PhoneyBaloney(actuator) => unimplemented!(),
-            Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
+            Self::PhoneyBaloney(actuator) => actuator.subscribe_to_changes(),
+            Self::MqttZigbeeSwitch(actuator) => actuator.subscribe_to_changes(),
         }
     }
 
     pub fn id(&self) -> Cow<'_, str> {
         match self {
             Self::PhoneyBaloney(actuator) => actuator.id().into(),
-            Self::MqttZigbeeSwitch(actuator) => unimplemented!(),
+            Self::MqttZigbeeSwitch(actuator) => actuator.id().into(),
         }
     }
 }

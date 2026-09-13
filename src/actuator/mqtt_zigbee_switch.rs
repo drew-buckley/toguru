@@ -56,6 +56,7 @@ impl MqttZigbeeSwitchActuator {
 pub struct MqttBrokerConnection {
     options: MqttOptions,
     state_change_tx_map: HashMap<String, broadcast::Sender<ActuatorToggleState>>,
+    id_topic_map: IdTopicMapping,
     set_tx: mpsc::Sender<(String, ToggleState)>,
     set_rx: mpsc::Receiver<(String, ToggleState)>,
     base_topic: String,
@@ -77,6 +78,7 @@ impl MqttBrokerConnection {
         Self {
             options: MqttOptions::new(mqtt_client_id, host, port),
             state_change_tx_map: HashMap::new(),
+            id_topic_map: IdTopicMapping::new(),
             set_tx: set_tx,
             set_rx,
             base_topic: base_topic.into(),
@@ -88,11 +90,13 @@ impl MqttBrokerConnection {
     pub fn new_actuator(
         &mut self,
         id: impl Into<String>,
+        topic: impl Into<String>,
         change_listener_capacity: usize,
     ) -> MqttZigbeeSwitchActuator {
         let id = id.into();
         let (tx, rx) = broadcast::channel(change_listener_capacity);
         self.state_change_tx_map.insert(id.clone(), tx);
+        self.id_topic_map.insert(&id, topic);
         MqttZigbeeSwitchActuator::new(
             id.clone(),
             self.set_tx.clone(),
@@ -125,6 +129,7 @@ impl MqttBrokerConnection {
             mqtt_client_capacity,
             &mut set_rx,
             &mut state_change_tx_map,
+            &self.id_topic_map,
             switch_timeout,
         )
         .await
@@ -142,6 +147,7 @@ async fn run_client_instance(
     mqtt_client_capacity: usize,
     set_rx: &mut mpsc::Receiver<(String, ToggleState)>,
     state_change_tx_map: &mut HashMap<String, StateWidget>,
+    id_topic_map: &IdTopicMapping,
     switch_timeout: Duration,
 ) -> Result<(), anyhow::Error> {
     let base_topic = base_topic.as_ref();
@@ -149,12 +155,15 @@ async fn run_client_instance(
     log::info!("Connecting to MQTT broker: {}:{}", broker_host, broker_port);
     let (client, mut eventloop) = AsyncClient::new(options, mqtt_client_capacity);
 
-    let sub_topic = format!("{}/+", base_topic);
-    log::debug!("Subscribing to {}", sub_topic);
-    client
-        .subscribe(sub_topic, QoS::AtMostOnce)
-        .await
-        .context("failed to subscribe to MQTT topic")?;
+    // let sub_topic = format!("{}/+", base_topic);
+    for switch_topic in id_topic_map.topics() {
+        let sub_topic = format!("{}/{}", base_topic, switch_topic);
+        log::debug!("Subscribing to {}", sub_topic);
+        client
+            .subscribe(sub_topic, QoS::AtMostOnce)
+            .await
+            .context("failed to subscribe to MQTT topic")?;
+    }
 
     let mut last_timeout_check = Instant::now();
     loop {
@@ -174,7 +183,11 @@ async fn run_client_instance(
 
         match event {
             ClientEvent::SetCommand(id, state) => {
-                let topic = format!("{}/{}/set", base_topic, id);
+                let Some(switch_topic) = id_topic_map.get_topic(&id) else {
+                    log::error!("MQTT broker client received unknown ID: {}", id);
+                    continue;
+                };
+                let topic = format!("{}/{}/set", base_topic, switch_topic);
                 let state = state.to_string();
                 log::debug!("Publishing MQTT message: {} {}", topic, state);
                 client
@@ -183,13 +196,14 @@ async fn run_client_instance(
             }
             ClientEvent::MqttEvent(event) => match event {
                 Event::Incoming(Packet::Publish(msg)) => match process_msg(&msg, base_topic) {
-                    Ok((id, state)) => {
-                        if let Some(StateWidget {
-                            last_state,
-                            last_state_ts,
-                            state_change_tx,
-                        }) = state_change_tx_map.get_mut(id)
-                        {
+                    Ok((switch_topic, state)) => {
+                        if let Some(id) = id_topic_map.get_id(switch_topic) {
+                            let StateWidget {
+                                last_state,
+                                last_state_ts,
+                                state_change_tx,
+                            } = state_change_tx_map.get_mut(id)
+                                .expect("logic error: switch-ID mapping is missing from state_change_tx_map");
                             if last_state.is_none_or(|ls| ls != state) {
                                 *last_state_ts = Instant::now();
                                 *last_state = Some(state);
@@ -197,7 +211,7 @@ async fn run_client_instance(
                                     state_change_tx.send(ActuatorToggleUpState::new(state).into());
                             }
                         } else {
-                            log::debug!("Ignoring unknown switch ID: {}", id)
+                            log::warn!("Ignoring unknown switch topic: {}", switch_topic)
                         }
                     }
                     Err(err) => log::warn!("Malformed MQTT payload: {:?}", err),
@@ -266,5 +280,38 @@ impl StateWidget {
             last_state_ts: Instant::now(),
             state_change_tx,
         }
+    }
+}
+
+struct IdTopicMapping {
+    id_to_topic: HashMap<String, String>,
+    topic_to_id: HashMap<String, String>,
+}
+
+impl IdTopicMapping {
+    fn new() -> Self {
+        Self {
+            id_to_topic: HashMap::new(),
+            topic_to_id: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, id: impl Into<String>, topic: impl Into<String>) {
+        let id = id.into();
+        let topic = topic.into();
+        self.id_to_topic.insert(id.clone(), topic.clone());
+        self.topic_to_id.insert(topic, id);
+    }
+
+    fn get_topic(&self, id: impl AsRef<str>) -> Option<&str> {
+        self.id_to_topic.get(id.as_ref()).map(|s| s.as_str())
+    }
+
+    fn get_id(&self, topic: impl AsRef<str>) -> Option<&str> {
+        self.topic_to_id.get(topic.as_ref()).map(|s| s.as_str())
+    }
+
+    fn topics(&self) -> impl Iterator<Item = &str> {
+        self.topic_to_id.keys().map(|s| s.as_str())
     }
 }

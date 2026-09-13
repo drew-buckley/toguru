@@ -3,7 +3,7 @@ use anyhow::Context;
 use axum::{
     Router,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State},
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -11,6 +11,8 @@ use http::StatusCode;
 use tokio::net::{TcpListener, ToSocketAddrs};
 
 use crate::api::{Api, ApiPath, Response as ApiResponse, v1};
+
+pub mod assets;
 
 pub struct Server<B>
 where
@@ -38,6 +40,7 @@ where
                 "/api/v1/toggle/{id}",
                 get(handle_get_v1_toggle).post(handle_post_v1_toggle),
             )
+            .fallback(handle_fallback)
             .with_state(api);
 
         let listener = TcpListener::bind(bind)
@@ -90,6 +93,15 @@ async fn handle_post_v1_toggle(
     api.post(ApiPath::V1(v1::ApiPath::Toggle(Some(toggle_id))), params)
         .await
         .into()
+}
+
+async fn handle_fallback(OriginalUri(_uri): OriginalUri) -> Response<Body> {
+    (
+        StatusCode::NOT_FOUND,
+        [(http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        Body::from(assets::NOT_FOUND_PAGE_GENERIC),
+    )
+        .into_response()
 }
 
 impl From<ApiResponse> for Response<Body> {
